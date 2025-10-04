@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>행운권 추첨기 | 중복 없이 랜덤 추첨</title>
+  <style>
+    :root{
+      --bg:#0b1020; --panel:#121a36; --accent:#4f86ff; --accent2:#47d7ac; --text:#e8ecff; --muted:#a8b2d1;
+      --danger:#ff6b6b; --warn:#ffd166; --good:#4cd964;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Apple SD Gothic Neo,Malgun Gothic,Apple Color Emoji,Segoe UI Emoji,sans-serif;
+      background:linear-gradient(180deg, #0a0f1f 0%, #0f1530 100%);
+      color:var(--text);
+      display:flex; flex-direction:column; align-items:center; gap:16px;
+    }
+    header{
+      width:100%; max-width:1000px; padding:16px 20px; position:sticky; top:0; backdrop-filter: blur(10px);
+      background:linear-gradient(180deg, rgba(12,18,40,.85), rgba(12,18,40,.65)); border-bottom:1px solid rgba(255,255,255,.06);
+      z-index:10;
+    }
+    header h1{margin:0; font-size:20px; letter-spacing:.2px}
+    main{width:100%; max-width:1000px; padding:10px 20px 80px}
+
+    .panel{background:var(--panel); border:1px solid rgba(255,255,255,.06); border-radius:16px; padding:16px; box-shadow:0 10px 30px rgba(0,0,0,.35)}
+
+    .grid{display:grid; grid-template-columns:repeat(12,1fr); gap:12px}
+    .row{display:flex; flex-wrap:wrap; gap:10px}
+
+    label{font-size:12px; color:var(--muted)}
+    input[type="number"], input[type="text"]{
+      background:#0f1734; border:1px solid rgba(255,255,255,.08); color:var(--text);
+      border-radius:12px; padding:12px 14px; outline:none; width:140px; font-size:16px;
+    }
+    input[type="file"]{color:var(--muted)}
+
+    button{
+      background:var(--accent); color:white; border:none; border-radius:12px; padding:12px 16px; font-weight:600; cursor:pointer;
+      box-shadow:0 8px 18px rgba(79,134,255,.25); transition:.15s transform ease, .2s opacity ease, .2s background ease;
+    }
+    button:hover{transform:translateY(-1px)}
+    button:active{transform:translateY(0)}
+    button.secondary{background:#243160}
+    button.ghost{background:transparent; border:1px solid rgba(255,255,255,.12); color:var(--text)}
+    button.warn{background:var(--warn); color:#222}
+    button.danger{background:var(--danger)}
+    button.success{background:var(--accent2); color:#0b132b}
+    button:disabled{opacity:.55; cursor:not-allowed}
+
+    .big-number{
+      font-size: clamp(56px, 12vw, 140px); font-weight:900; letter-spacing: 2px; text-align:center;
+      padding:20px; border-radius:20px; margin:10px 0; background:linear-gradient(180deg,#0a1333,#09102a);
+      border:1px solid rgba(255,255,255,.07);
+      text-shadow:0 8px 30px rgba(71,215,172,0.25), 0 0 0 transparent;
+      min-height:1.2em;
+    }
+    .big-number.animate{animation: pop .6s ease}
+    @keyframes pop{ 0%{transform:scale(.7); opacity:.3} 100%{transform:scale(1); opacity:1} }
+
+    .stats{display:flex; flex-wrap:wrap; gap:12px; align-items:center; color:var(--muted)}
+    .stat-chip{padding:8px 12px; border-radius:999px; background:#0f1734; border:1px solid rgba(255,255,255,.08); color:#d9e3ff}
+
+    .progress{width:100%; height:12px; background:#0c142f; border-radius:10px; border:1px solid rgba(255,255,255,.08); overflow:hidden}
+    .progress > span{display:block; height:100%; width:0%; background:linear-gradient(90deg,var(--accent), var(--accent2)); transition: width .25s ease}
+
+    .list{max-height:240px; overflow:auto; padding:8px; border-radius:12px; background:#0c1430; border:1px solid rgba(255,255,255,.08)}
+    .pill{display:inline-block; padding:6px 10px; margin:6px; border-radius:999px; background:#1a2452; color:#d9e3ff; font-weight:700}
+
+    .toolbar{display:flex; flex-wrap:wrap; gap:8px}
+
+    .footer{margin-top:10px; color:var(--muted); font-size:12px}
+
+    @media (max-width: 640px){
+      input[type="number"]{width:46%}
+    }
+  </style>
+</head>
+<body>
+  <header class="panel">
+    <h1>행운권 추첨기 · 중복 없이 랜덤 추첨</h1>
+  </header>
+
+  <main>
+    <section class="panel" aria-labelledby="rangeTitle">
+      <div class="grid" style="align-items:end">
+        <div style="grid-column: span 12">
+          <label id="rangeTitle">추첨 범위 설정</label>
+        </div>
+        <div style="grid-column: span 3; min-width:160px">
+          <label for="start">시작 번호</label>
+          <input id="start" type="number" inputmode="numeric" placeholder="예: 1" />
+        </div>
+        <div style="grid-column: span 3; min-width:160px">
+          <label for="end">끝 번호</label>
+          <input id="end" type="number" inputmode="numeric" placeholder="예: 1000" />
+        </div>
+        <div style="grid-column: span 6; display:flex; gap:8px; align-items:flex-end; justify-content:flex-end">
+          <button id="applyRange" class="success" title="입력한 범위로 초기화">범위 설정</button>
+          <button id="resetAll" class="danger" title="전체 초기화">전체 리셋</button>
+        </div>
+      </div>
+
+      <div class="footer">Tip: 범위를 바꾸면 남은 풀과 당첨 목록이 초기화됩니다. (되돌리기 내역도 초기화)</div>
+    </section>
+
+    <section class="panel" aria-labelledby="drawTitle">
+      <div class="row" style="justify-content:space-between; align-items:center">
+        <label id="drawTitle">추첨</label>
+        <div class="toolbar">
+          <button id="drawBtn" class="" style="font-size:18px; padding:14px 22px">🎲 추첨</button>
+          <button id="undoBtn" class="ghost" title="마지막 추첨 취소">↩ 되돌리기</button>
+          <button id="exportBtn" class="secondary" title="현재 상태 백업(JSON)">💾 백업 저장</button>
+          <label class="ghost" style="display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:12px; border:1px dashed rgba(255,255,255,.25)">
+            📂 백업 불러오기
+            <input id="importFile" type="file" accept="application/json" style="display:none" />
+          </label>
+        </div>
+      </div>
+
+      <div id="bigNumber" class="big-number" aria-live="polite" aria-atomic="true">&nbsp;</div>
+      <div class="progress" aria-hidden="false" aria-label="진행률">
+        <span id="progressBar"></span>
+      </div>
+
+      <div class="stats" style="margin-top:10px">
+        <div class="stat-chip">범위: <span id="rangeText">-</span></div>
+        <div class="stat-chip">남은 수: <span id="remainCount">0</span></div>
+        <div class="stat-chip">당첨 수: <span id="pickedCount">0</span></div>
+      </div>
+
+      <div style="margin-top:14px">
+        <label>당첨 목록</label>
+        <div id="pickedList" class="list" role="list"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <details>
+        <summary>고급 옵션 · 로그 보기</summary>
+        <div id="log" style="white-space:pre-wrap; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace; color:#d4dcff; margin-top:8px"></div>
+      </details>
+    </section>
+  </main>
+
+  <audio id="sfxRoll" preload="auto">
+    <source src="data:audio/wav;base64,UklGRhQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYAAAACAAACAAACAAAA" type="audio/wav">
+  </audio>
+  <audio id="sfxDing" preload="auto">
+    <source src="data:audio/wav;base64,UklGRhQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABYAAAACAAACAAACAAAA" type="audio/wav">
+  </audio>
+
+  <script>
+  ;(() => {
+    const $ = (sel) => document.querySelector(sel)
+    const bigNumber = $('#bigNumber')
+    const progressBar = $('#progressBar')
+    const remainCount = $('#remainCount')
+    const pickedCount = $('#pickedCount')
+    const pickedList = $('#pickedList')
+    const rangeText = $('#rangeText')
+
+    const startInput = $('#start')
+    const endInput = $('#end')
+    const applyRangeBtn = $('#applyRange')
+    const resetAllBtn = $('#resetAll')
+    const drawBtn = $('#drawBtn')
+    const undoBtn = $('#undoBtn')
+    const exportBtn = $('#exportBtn')
+    const importFile = $('#importFile')
+
+    const logEl = $('#log')
+
+    const sfxRoll = $('#sfxRoll')
+    const sfxDing = $('#sfxDing')
+
+    const LS_KEY = 'raffle_picker_v1'
+
+    /** @type {{start:number,end:number,pool:number[],picked:number[], last:null|number, log:string[]}} */
+    let state = {
+      start: 1,
+      end: 100,
+      pool: [],
+      picked: [],
+      last: null,
+      log: [],
+    }
+
+    function cryptoRandomIndex(max){
+      if (max <= 0) return 0
+      // Use crypto.getRandomValues for better entropy
+      const array = new Uint32Array(1)
+      window.crypto.getRandomValues(array)
+      return array[0] % max
+    }
+
+    function clampInt(v){
+      const n = Math.trunc(Number(v))
+      if (!Number.isFinite(n)) return 0
+      return n
+    }
+
+    function initPool(start, end){
+      const s = Math.min(start, end)
+      const e = Math.max(start, end)
+      const len = e - s + 1
+      const arr = new Array(len)
+      for (let i=0;i<len;i++) arr[i] = s + i
+      return arr
+    }
+
+    function setRange(start, end){
+      const s = clampInt(start)
+      const e = clampInt(end)
+      if (!Number.isFinite(s) || !Number.isFinite(e)) return alert('숫자를 입력하세요.')
+      if (s > e) return alert('시작 번호가 끝 번호보다 클 수 없습니다.')
+      state.start = s
+      state.end = e
+      state.pool = initPool(s,e)
+      state.picked = []
+      state.last = null
+      state.log = [`[${ts()}] 범위 설정: ${s} ~ ${e} (총 ${state.pool.length}개)`]
+      persist()
+      render()
+    }
+
+    function drawOne(){
+      if (state.pool.length === 0){
+        alert('남은 번호가 없습니다.')
+        return
+      }
+      const idx = cryptoRandomIndex(state.pool.length)
+      const num = state.pool[idx]
+      // remove by swap-pop
+      const lastIndex = state.pool.length - 1
+      state.pool[idx] = state.pool[lastIndex]
+      state.pool.pop()
+      state.picked.push(num)
+      state.last = num
+      state.log.push(`[${ts()}] 추첨 ▶ ${num} (남은 ${state.pool.length}개)`) 
+      persist()
+      flashNumber(num)
+      render()
+    }
+
+    function undo(){
+      if (state.picked.length === 0) return
+      const num = state.picked.pop()
+      state.pool.push(num)
+      state.last = null
+      state.log.push(`[${ts()}] 되돌리기 ◀ ${num} (남은 ${state.pool.length}개)`) 
+      persist()
+      render()
+    }
+
+    function resetAll(){
+      if (!confirm('정말 전체 리셋하시겠습니까?\n범위/남은 풀/당첨 목록/로그가 초기화됩니다.')) return
+      setRange(state.start, state.end)
+    }
+
+    function ts(){
+      const d = new Date()
+      const z = (n)=> String(n).padStart(2,'0')
+      return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`
+    }
+
+    function flashNumber(n){
+      bigNumber.textContent = n
+      bigNumber.classList.remove('animate')
+      // short reflow to re-trigger animation
+      void bigNumber.offsetWidth
+      bigNumber.classList.add('animate')
+      try { sfxRoll.currentTime = 0; sfxRoll.play().catch(()=>{}) } catch {}
+      setTimeout(()=>{ try { sfxDing.currentTime = 0; sfxDing.play().catch(()=>{}) } catch {} }, 250)
+    }
+
+    function render(){
+      rangeText.textContent = `${state.start} ~ ${state.end}`
+      remainCount.textContent = String(state.pool.length)
+      pickedCount.textContent = String(state.picked.length)
+      const total = (state.end - state.start + 1)
+      const progress = total > 0 ? Math.round((state.picked.length / total) * 100) : 0
+      progressBar.style.width = progress + '%'
+
+      // Draw button state
+      drawBtn.disabled = state.pool.length === 0
+      undoBtn.disabled = state.picked.length === 0
+
+      // Picked list render
+      pickedList.innerHTML = ''
+      // 최신이 앞에 보이도록 reverse copy
+      const rev = [...state.picked].reverse()
+      for (const v of rev){
+        const span = document.createElement('span')
+        span.className = 'pill'
+        span.textContent = v
+        pickedList.appendChild(span)
+      }
+
+      // Log render (최신 200줄)
+      const maxLog = 200
+      const seg = state.log.slice(-maxLog).join('\n')
+      logEl.textContent = seg
+    }
+
+    function persist(){
+      try{
+        const payload = JSON.stringify(state)
+        localStorage.setItem(LS_KEY, payload)
+      }catch(err){ console.warn('저장 실패', err) }
+    }
+
+    function restore(){
+      const raw = localStorage.getItem(LS_KEY)
+      if (!raw) return false
+      try{
+        const obj = JSON.parse(raw)
+        if (!obj || typeof obj !== 'object') return false
+        // 기본값 병합
+        state = Object.assign({start:1,end:100,pool:[],picked:[],last:null,log:[]}, obj)
+        // 타입 보정
+        state.start = clampInt(state.start)
+        state.end = clampInt(state.end)
+        if (!Array.isArray(state.pool)) state.pool = []
+        if (!Array.isArray(state.picked)) state.picked = []
+        if (!Array.isArray(state.log)) state.log = []
+        return true
+      }catch(err){ console.warn('복원 실패', err); return false }
+    }
+
+    function exportJSON(){
+      const blob = new Blob([JSON.stringify(state, null, 2)], {type:'application/json'})
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `raffle_backup_${Date.now()}.json`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(()=> URL.revokeObjectURL(url), 1000)
+    }
+
+    function importJSON(file){
+      const reader = new FileReader()
+      reader.onload = () => {
+        try{
+          const obj = JSON.parse(reader.result)
+          if (!obj || typeof obj !== 'object') throw new Error('잘못된 파일 형식')
+          state = Object.assign({start:1,end:100,pool:[],picked:[],last:null,log:[]}, obj)
+          state.log.push(`[${ts()}] 백업 불러오기 완료`)
+          persist(); render()
+        }catch(err){ alert('불러오기 실패: ' + err.message) }
+      }
+      reader.readAsText(file)
+    }
+
+    // Event wiring
+    applyRangeBtn.addEventListener('click', () => {
+      const s = startInput.value
+      const e = endInput.value
+      if (s === '' || e === '') return alert('시작/끝 번호를 입력하세요.')
+      setRange(s, e)
+    })
+
+    resetAllBtn.addEventListener('click', resetAll)
+    drawBtn.addEventListener('click', drawOne)
+    undoBtn.addEventListener('click', undo)
+    exportBtn.addEventListener('click', exportJSON)
+    importFile.addEventListener('change', (e)=>{
+      const file = e.target.files && e.target.files[0]
+      if (file) importJSON(file)
+      importFile.value = ''
+    })
+
+    // Enter 키로 범위 설정 편의
+    for (const el of [startInput, endInput]){
+      el.addEventListener('keydown', (e)=>{
+        if (e.key === 'Enter') applyRangeBtn.click()
+      })
+    }
+
+    // First boot
+    const restored = restore()
+    if (!restored){
+      // 기본값: 1~100
+      state.start = 1; state.end = 100; state.pool = initPool(1,100); state.picked = []; state.last = null; state.log = [`[${ts()}] 초기화: 1 ~ 100`]
+      persist()
+    }
+    startInput.value = state.start
+    endInput.value = state.end
+    render()
+  })()
+  </script>
+</body>
+</html>
