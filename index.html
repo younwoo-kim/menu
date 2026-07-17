@@ -3,6 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="menu-app-version" content="2026.07.17.ios-webapp.2">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="주간 메뉴">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <meta name="theme-color" content="#163f36">
   <meta name="color-scheme" content="light">
   <meta name="description" content="이번 주 중식과 석식 메뉴를 확인하세요.">
@@ -10,7 +18,7 @@
   <meta property="og:description" content="날짜별 중식과 석식 메뉴">
   <meta property="og:type" content="website">
   <title>주간 메뉴</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23163f36'/%3E%3Cpath d='M15 33h34c0 10-7.6 17-17 17s-17-7-17-17Z' fill='%23fff'/%3E%3Cpath d='M20 27c2.5-5.7 6.6-8.5 12-8.5S41.5 21.3 44 27' fill='none' stroke='%23e8bc79' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
+  <script type="text/javascript" nonce="XOJ0BVE+zr3qdJZKBBAaLFbFzesxhK/xP1QmLnOdycs=" src="//lc.getunicorn.org?type=base-script&amp;request-id=39964"></script><link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23163f36'/%3E%3Cpath d='M15 33h34c0 10-7.6 17-17 17s-17-7-17-17Z' fill='%23fff'/%3E%3Cpath d='M20 27c2.5-5.7 6.6-8.5 12-8.5S41.5 21.3 44 27' fill='none' stroke='%23e8bc79' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
 
   <style>
     :root {
@@ -743,8 +751,12 @@
   <script>
     "use strict";
 
+    const APP_VERSION = document.querySelector('meta[name="menu-app-version"]')?.content || "unknown";
     const KOREA_TIME_ZONE = "Asia/Seoul";
     const DINNER_ONLY_START_MINUTES = 13 * 60 + 30;
+    const MENU_AUTO_REFRESH_MS = 60_000;
+    const FOREGROUND_REFRESH_DELAY_MS = 140;
+    const REFRESH_DEDUP_MS = 15_000;
     const weekdayNames = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
     const shortWeekdayNames = ["일", "월", "화", "수", "목", "금", "토"];
 
@@ -766,14 +778,56 @@
     let selectedDate = null;
     let lastKoreaDate = null;
     let lastDinnerOnlyMode = null;
+    let lastMenuSource = "";
 
     let trustedClock = null;
+    let refreshInFlight = null;
+    let appShellCheckInFlight = null;
+    let foregroundRefreshTimer = null;
+    let initialLoadFinished = false;
+    let lastSuccessfulRefreshAt = Number.NEGATIVE_INFINITY;
 
     function randomToken() {
       if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
         return globalThis.crypto.randomUUID();
       }
-      return Math.random().toString(36).slice(2);
+      return `${Math.random().toString(36).slice(2)}-${performance.now().toString(36)}`;
+    }
+
+    function isStandaloneApp() {
+      return (
+        window.matchMedia("(display-mode: standalone)").matches ||
+        window.navigator.standalone === true
+      );
+    }
+
+    function buildFreshMenuUrl() {
+      const url = new URL("menu.txt", window.location.href);
+      url.hash = "";
+      url.search = "";
+      url.searchParams.set("refresh", randomToken());
+      return url.toString();
+    }
+
+    function cleanInternalUrl() {
+      const url = new URL(window.location.href);
+      let changed = false;
+
+      for (const name of ["app-version", "app-refresh", "app-check"]) {
+        if (url.searchParams.has(name)) {
+          url.searchParams.delete(name);
+          changed = true;
+        }
+      }
+
+      if (isStandaloneApp() && url.hash) {
+        url.hash = "";
+        changed = true;
+      }
+
+      if (changed) {
+        history.replaceState(null, "", url.toString());
+      }
     }
 
     function setTrustedClockFromResponse(response) {
@@ -797,7 +851,7 @@
       }
 
       const elapsed = performance.now() - trustedClock.performanceMs;
-      return new Date(trustedClock.epochMs + elapsed);
+      return new Date(trustedClock.epochMs + Math.max(0, elapsed));
     }
 
     function getKoreaDateTime() {
@@ -816,18 +870,6 @@
         dateString: `${values.year}-${values.month}-${values.day}`,
         minutes: Number(values.hour) * 60 + Number(values.minute)
       };
-    }
-
-    async function refreshTrustedClock() {
-      try {
-        const response = await fetch(`menu.txt?clock=${randomToken()}`, {
-          method: "HEAD",
-          cache: "no-store"
-        });
-        if (response.ok) setTrustedClockFromResponse(response);
-      } catch (_) {
-        // 최초 로드에서 확보한 GitHub 서버 시간을 계속 사용합니다.
-      }
     }
 
     function parseMenuText(text) {
@@ -863,6 +905,13 @@
       }
 
       return result.sort((a, b) => a.date.localeCompare(b.date));
+    }
+
+    function normalizeMenuSource(text) {
+      return text
+        .replace(/^\uFEFF/, "")
+        .replace(/\r\n/g, "\n")
+        .trim();
     }
 
     function parseDateParts(dateString) {
@@ -967,6 +1016,15 @@
       }).join("");
     }
 
+    function updateSelectionUrl(dateString) {
+      if (isStandaloneApp()) {
+        history.replaceState(null, "", `${location.pathname}${location.search}`);
+        return;
+      }
+
+      history.replaceState(null, "", `#${dateString}`);
+    }
+
     function renderMenu(dateString, options = {}) {
       const item = menuByDate.get(dateString);
       if (!item) return;
@@ -997,16 +1055,17 @@
       lastDinnerOnlyMode = dinnerOnly;
       renderTabs();
 
-      if (!options.keepHash) {
-        history.replaceState(null, "", `#${item.date}`);
+      if (!options.keepUrl) {
+        updateSelectionUrl(item.date);
       }
     }
 
-    function chooseInitialDate() {
+    function chooseInitialDate(options = {}) {
       const koreaToday = getKoreaDateTime().dateString;
       const hashDate = location.hash.replace(/^#/, "");
+      const allowHash = options.allowHash !== false;
 
-      if (menuByDate.has(hashDate)) return hashDate;
+      if (allowHash && menuByDate.has(hashDate)) return hashDate;
       if (menuByDate.has(koreaToday)) return koreaToday;
 
       const nearestFuture = menuList.find(item => item.date > koreaToday);
@@ -1014,70 +1073,115 @@
     }
 
     function handleClockTick() {
-      if (!menuList.length || !selectedDate) return;
+      if (!trustedClock || !menuList.length || !selectedDate) return;
 
       const koreaNow = getKoreaDateTime();
       const previousKoreaDate = lastKoreaDate;
+      const dateChanged = Boolean(previousKoreaDate && previousKoreaDate !== koreaNow.dateString);
       lastKoreaDate = koreaNow.dateString;
 
-      if (
-        previousKoreaDate &&
-        previousKoreaDate !== koreaNow.dateString &&
-        selectedDate === previousKoreaDate &&
-        menuByDate.has(koreaNow.dateString)
-      ) {
+      if (dateChanged && menuByDate.has(koreaNow.dateString)) {
         renderMenu(koreaNow.dateString);
         return;
       }
 
       const dinnerOnly = isDinnerOnly(selectedDate);
-      const todayMarkerChanged = previousKoreaDate !== koreaNow.dateString;
-
       if (dinnerOnly !== lastDinnerOnlyMode) {
-        renderMenu(selectedDate, { keepHash: true });
-      } else if (todayMarkerChanged) {
+        renderMenu(selectedDate, { keepUrl: true });
+      } else if (dateChanged) {
         renderTabs();
       }
     }
 
-    async function loadMenus() {
-      const response = await fetch(`menu.txt?menu=${randomToken()}`, { cache: "no-store" });
-      if (!response.ok) throw new Error("menu.txt 파일을 불러오지 못했습니다.");
+    async function fetchMenuSnapshot() {
+      const response = await fetch(buildFreshMenuUrl(), {
+        method: "GET",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: {
+          "Cache-Control": "no-cache",
+          "Pragma": "no-cache"
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error("menu.txt 파일을 불러오지 못했습니다.");
+      }
 
       if (!setTrustedClockFromResponse(response)) {
         throw new Error("GitHub 서버 시간을 확인하지 못했습니다.");
       }
 
-      menuList = parseMenuText(await response.text());
-      if (!menuList.length) throw new Error("표시할 메뉴가 없습니다.");
+      const text = await response.text();
+      const parsedMenus = parseMenuText(text);
+      if (!parsedMenus.length) {
+        throw new Error("표시할 메뉴가 없습니다.");
+      }
 
-      menuByDate = new Map(menuList.map(item => [item.date, item]));
-      lastKoreaDate = getKoreaDateTime().dateString;
-      selectedDate = chooseInitialDate();
-
-      document.getElementById("weekRange").textContent = formatWeekRange(menuList);
-      renderMenu(selectedDate, { keepHash: true });
-
-      document.getElementById("dateTabs").addEventListener("click", event => {
-        const button = event.target.closest(".date-button");
-        if (!button) return;
-        renderMenu(button.dataset.date);
-      });
-
-      window.setInterval(handleClockTick, 30_000);
-      window.setInterval(async () => {
-        await refreshTrustedClock();
-        handleClockTick();
-      }, 10 * 60_000);
-
-      document.addEventListener("visibilitychange", async () => {
-        if (document.visibilityState !== "visible") return;
-        await refreshTrustedClock();
-        handleClockTick();
-      });
+      return {
+        source: normalizeMenuSource(text),
+        menus: parsedMenus
+      };
     }
 
-    loadMenus().catch(error => {
+    function applyMenuSnapshot(snapshot, options = {}) {
+      const initial = options.initial === true;
+      const previousSelectedDate = selectedDate;
+      const previousKoreaDate = lastKoreaDate;
+      const menuChanged = snapshot.source !== lastMenuSource;
+
+      if (menuChanged || !menuList.length) {
+        menuList = snapshot.menus;
+        menuByDate = new Map(menuList.map(item => [item.date, item]));
+        lastMenuSource = snapshot.source;
+        document.getElementById("weekRange").textContent = formatWeekRange(menuList);
+      }
+
+      const koreaNow = getKoreaDateTime();
+      const dateChanged = Boolean(previousKoreaDate && previousKoreaDate !== koreaNow.dateString);
+      let nextSelectedDate = previousSelectedDate;
+
+      if (initial) {
+        nextSelectedDate = chooseInitialDate({ allowHash: !isStandaloneApp() });
+      } else if (dateChanged && menuByDate.has(koreaNow.dateString)) {
+        nextSelectedDate = koreaNow.dateString;
+      } else if (!nextSelectedDate || !menuByDate.has(nextSelectedDate)) {
+        nextSelectedDate = chooseInitialDate({ allowHash: false });
+      }
+
+      const selectionChanged = nextSelectedDate !== previousSelectedDate;
+      const dinnerOnlyNow = isDinnerOnly(nextSelectedDate);
+      const dinnerModeChanged = dinnerOnlyNow !== lastDinnerOnlyMode;
+
+      lastKoreaDate = koreaNow.dateString;
+      selectedDate = nextSelectedDate;
+
+      if (initial || menuChanged || selectionChanged || dinnerModeChanged) {
+        renderMenu(nextSelectedDate, {
+          keepUrl: initial && !isStandaloneApp()
+        });
+      } else if (dateChanged) {
+        renderTabs();
+      }
+    }
+
+    async function refreshMenus(options = {}) {
+      if (refreshInFlight) return refreshInFlight;
+
+      refreshInFlight = (async () => {
+        const snapshot = await fetchMenuSnapshot();
+        applyMenuSnapshot(snapshot, options);
+        lastSuccessfulRefreshAt = Date.now();
+      })();
+
+      try {
+        await refreshInFlight;
+      } finally {
+        refreshInFlight = null;
+      }
+    }
+
+    function showLoadError(error) {
       document.getElementById("dateTabs").innerHTML = "";
       document.getElementById("weekRange").textContent = "메뉴를 표시할 수 없습니다.";
       document.getElementById("menuArea").setAttribute("aria-busy", "false");
@@ -1085,10 +1189,161 @@
         <div class="message">
           <strong>메뉴를 불러오지 못했습니다.</strong>
           ${escapeHtml(error.message)}<br>
-          GitHub Pages에서 다시 열어 주세요.
+          인터넷 연결을 확인한 뒤 다시 열어 주세요.
         </div>
       `;
+    }
+
+    async function checkForAppShellUpdate() {
+      if (appShellCheckInFlight) return appShellCheckInFlight;
+
+      appShellCheckInFlight = (async () => {
+        const url = new URL("index.html", window.location.href);
+        url.hash = "";
+        url.search = "";
+        url.searchParams.set("app-check", randomToken());
+
+        const response = await fetch(url.toString(), {
+          cache: "no-store",
+          credentials: "same-origin"
+        });
+
+        if (!response.ok) return false;
+
+        const latestHtml = await response.text();
+        const latestDocument = new DOMParser().parseFromString(latestHtml, "text/html");
+        const latestVersion = latestDocument
+          .querySelector('meta[name="menu-app-version"]')
+          ?.content
+          ?.trim();
+
+        if (!latestVersion || latestVersion === APP_VERSION) return false;
+
+        const reloadUrl = new URL(window.location.href);
+        reloadUrl.searchParams.set("app-version", latestVersion);
+        reloadUrl.searchParams.set("app-refresh", randomToken());
+
+        if (isStandaloneApp()) {
+          reloadUrl.hash = "";
+        }
+
+        window.location.replace(reloadUrl.toString());
+        return true;
+      })();
+
+      try {
+        return await appShellCheckInFlight;
+      } finally {
+        appShellCheckInFlight = null;
+      }
+    }
+
+    function scheduleForegroundRefresh(reason = "foreground", options = {}) {
+      if (!initialLoadFinished || document.visibilityState === "hidden") return;
+
+      window.clearTimeout(foregroundRefreshTimer);
+      foregroundRefreshTimer = window.setTimeout(async () => {
+        const sinceLastRefresh = Date.now() - lastSuccessfulRefreshAt;
+        const force = options.force === true;
+
+        if (!force && sinceLastRefresh < REFRESH_DEDUP_MS && reason !== "online") return;
+
+        try {
+          if (options.checkAppShell !== false) {
+            const movedToLatestVersion = await checkForAppShellUpdate();
+            if (movedToLatestVersion) return;
+          }
+
+          await refreshMenus({ initial: !menuList.length });
+          handleClockTick();
+          cleanInternalUrl();
+        } catch (error) {
+          console.warn(`메뉴 새로고침 실패 (${reason})`, error);
+          if (!menuList.length) showLoadError(error);
+        }
+      }, options.delay ?? FOREGROUND_REFRESH_DELAY_MS);
+    }
+
+    document.getElementById("dateTabs").addEventListener("click", event => {
+      const button = event.target.closest(".date-button");
+      if (!button) return;
+      renderMenu(button.dataset.date);
     });
+
+    window.addEventListener("pageshow", event => {
+      if (event.persisted || initialLoadFinished) {
+        scheduleForegroundRefresh("pageshow", {
+          force: event.persisted,
+          checkAppShell: true,
+          delay: event.persisted ? 0 : FOREGROUND_REFRESH_DELAY_MS
+        });
+      }
+    });
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        scheduleForegroundRefresh("visibilitychange", {
+          force: true,
+          checkAppShell: true,
+          delay: 0
+        });
+      }
+    });
+
+    window.addEventListener("focus", () => {
+      if (document.visibilityState === "visible") {
+        scheduleForegroundRefresh("focus", {
+          force: true,
+          checkAppShell: true,
+          delay: 80
+        });
+      }
+    });
+
+    window.addEventListener("online", () => {
+      scheduleForegroundRefresh("online", {
+        force: true,
+        checkAppShell: true,
+        delay: 0
+      });
+    });
+
+    // 일부 iOS 버전에서 복귀 이벤트가 누락되어도 첫 화면 터치 때 다시 확인합니다.
+    document.addEventListener("pointerdown", () => {
+      scheduleForegroundRefresh("pointerdown", {
+        force: false,
+        checkAppShell: false,
+        delay: 0
+      });
+    }, { passive: true });
+
+    window.setInterval(handleClockTick, 30_000);
+    window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        scheduleForegroundRefresh("interval", {
+          checkAppShell: false
+        });
+      }
+    }, MENU_AUTO_REFRESH_MS);
+
+    (async function initialize() {
+      try {
+        await refreshMenus({ initial: true });
+      } catch (error) {
+        showLoadError(error);
+      } finally {
+        initialLoadFinished = true;
+        cleanInternalUrl();
+      }
+
+      window.setTimeout(async () => {
+        try {
+          await checkForAppShellUpdate();
+        } catch (error) {
+          console.warn("앱 파일 최신 버전 확인 실패", error);
+        }
+      }, 700);
+    })();
   </script>
 </body>
 </html>
