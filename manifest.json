@@ -1,0 +1,33 @@
+{
+  "id": "/menu/",
+  "name": "주간 메뉴",
+  "short_name": "주간 메뉴",
+  "description": "날짜별 중식과 석식 메뉴를 확인하는 주간 메뉴 웹앱",
+  "lang": "ko-KR",
+  "start_url": "/menu/",
+  "scope": "/menu/",
+  "display": "standalone",
+  "background_color": "#f4f2ec",
+  "theme_color": "#163f36",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
