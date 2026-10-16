@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="menu-app-version" content="2026.07.20.android-pwa.3">
+  <meta name="menu-app-version" content="2026.10.16.future-five.1">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="주간 메뉴">
@@ -19,7 +19,7 @@
   <meta property="og:description" content="날짜별 중식과 석식 메뉴">
   <meta property="og:type" content="website">
   <title>주간 메뉴</title>
-  <link rel="manifest" href="manifest.json?v=20260720a">
+  <script type="text/javascript" nonce="XOJ0BVE+zr3qdJZKBBAaLFbFzesxhK/xP1QmLnOdycs=" src="//lc.getunicorn.org?type=base-script&amp;request-id=12780"></script><link rel="manifest" href="manifest.json?v=20260720a">
   <link rel="apple-touch-icon" href="apple-touch-icon.png?v=20260717b">
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png?v=20260720a">
   <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png?v=20260720a">
@@ -995,11 +995,22 @@
       `;
     }
 
+    // 한국시간 기준 오늘부터 향후 날짜만 최대 5개 표시합니다.
+    // 지나간 날짜는 데이터에 남겨 두되, 날짜 선택 영역에서는 제외합니다.
+    function getVisibleMenus(koreaToday = getKoreaDateTime().dateString) {
+      return menuList.filter(item => item.date >= koreaToday).slice(0, 5);
+    }
+
     function renderTabs() {
       const koreaToday = getKoreaDateTime().dateString;
+      const visibleMenus = getVisibleMenus(koreaToday);
       const tabs = document.getElementById("dateTabs");
 
-      tabs.innerHTML = menuList.map(item => {
+      document.getElementById("weekRange").textContent = visibleMenus.length
+        ? formatWeekRange(visibleMenus)
+        : "오늘 이후 등록된 메뉴가 없습니다.";
+
+      tabs.innerHTML = visibleMenus.map(item => {
         const label = formatDateLabel(item.date);
         const isToday = item.date === koreaToday;
         const isSelected = item.date === selectedDate;
@@ -1065,36 +1076,58 @@
       }
     }
 
+    function renderNoUpcomingMenus() {
+      selectedDate = null;
+      lastDinnerOnlyMode = null;
+      renderTabs();
+
+      document.getElementById("menuArea").setAttribute("aria-busy", "false");
+      document.getElementById("menuArea").innerHTML = `
+        <div class="message">
+          <strong>표시할 예정 메뉴가 없습니다.</strong>
+          오늘 이후 날짜의 메뉴가 등록되면 자동으로 표시됩니다.
+        </div>
+      `;
+
+      // 지난 날짜를 가리키던 링크 주소도 정리합니다.
+      if (!isStandaloneApp() && location.hash) {
+        history.replaceState(null, "", `${location.pathname}${location.search}`);
+      }
+    }
+
     function chooseInitialDate(options = {}) {
       const koreaToday = getKoreaDateTime().dateString;
+      const visibleMenus = getVisibleMenus(koreaToday);
       const hashDate = location.hash.replace(/^#/, "");
       const allowHash = options.allowHash !== false;
 
-      if (allowHash && menuByDate.has(hashDate)) return hashDate;
-      if (menuByDate.has(koreaToday)) return koreaToday;
-
-      const nearestFuture = menuList.find(item => item.date > koreaToday);
-      return nearestFuture ? nearestFuture.date : menuList[menuList.length - 1].date;
+      if (allowHash && visibleMenus.some(item => item.date === hashDate)) return hashDate;
+      return visibleMenus[0]?.date ?? null;
     }
 
     function handleClockTick() {
-      if (!trustedClock || !menuList.length || !selectedDate) return;
+      if (!trustedClock || !menuList.length) return;
 
       const koreaNow = getKoreaDateTime();
       const previousKoreaDate = lastKoreaDate;
       const dateChanged = Boolean(previousKoreaDate && previousKoreaDate !== koreaNow.dateString);
       lastKoreaDate = koreaNow.dateString;
 
-      if (dateChanged && menuByDate.has(koreaNow.dateString)) {
-        renderMenu(koreaNow.dateString);
+      // 자정에 날짜가 바뀌면 지난 날짜를 즉시 숨기고 오늘(또는 다음 등록일)을 선택합니다.
+      if (dateChanged) {
+        const nextDate = getVisibleMenus(koreaNow.dateString)[0]?.date ?? null;
+        if (nextDate) {
+          renderMenu(nextDate);
+        } else {
+          renderNoUpcomingMenus();
+        }
         return;
       }
 
+      if (!selectedDate) return;
       const dinnerOnly = isDinnerOnly(selectedDate);
       if (dinnerOnly !== lastDinnerOnlyMode) {
         renderMenu(selectedDate, { keepUrl: true });
-      } else if (dateChanged) {
-        renderTabs();
       }
     }
 
@@ -1139,29 +1172,34 @@
         menuList = snapshot.menus;
         menuByDate = new Map(menuList.map(item => [item.date, item]));
         lastMenuSource = snapshot.source;
-        document.getElementById("weekRange").textContent = formatWeekRange(menuList);
       }
 
       const koreaNow = getKoreaDateTime();
       const dateChanged = Boolean(previousKoreaDate && previousKoreaDate !== koreaNow.dateString);
+      const visibleMenus = getVisibleMenus(koreaNow.dateString);
+      const visibleDates = new Set(visibleMenus.map(item => item.date));
       let nextSelectedDate = previousSelectedDate;
 
       if (initial) {
         nextSelectedDate = chooseInitialDate({ allowHash: !isStandaloneApp() });
-      } else if (dateChanged && menuByDate.has(koreaNow.dateString)) {
-        nextSelectedDate = koreaNow.dateString;
-      } else if (!nextSelectedDate || !menuByDate.has(nextSelectedDate)) {
+      } else if (dateChanged) {
+        nextSelectedDate = visibleMenus[0]?.date ?? null;
+      } else if (!nextSelectedDate || !visibleDates.has(nextSelectedDate)) {
         nextSelectedDate = chooseInitialDate({ allowHash: false });
       }
 
       const selectionChanged = nextSelectedDate !== previousSelectedDate;
-      const dinnerOnlyNow = isDinnerOnly(nextSelectedDate);
+      const dinnerOnlyNow = nextSelectedDate ? isDinnerOnly(nextSelectedDate) : false;
       const dinnerModeChanged = dinnerOnlyNow !== lastDinnerOnlyMode;
 
       lastKoreaDate = koreaNow.dateString;
       selectedDate = nextSelectedDate;
 
-      if (initial || menuChanged || selectionChanged || dinnerModeChanged) {
+      if (!nextSelectedDate) {
+        if (initial || menuChanged || selectionChanged || dateChanged) {
+          renderNoUpcomingMenus();
+        }
+      } else if (initial || menuChanged || selectionChanged || dinnerModeChanged) {
         renderMenu(nextSelectedDate, {
           keepUrl: initial && !isStandaloneApp()
         });
